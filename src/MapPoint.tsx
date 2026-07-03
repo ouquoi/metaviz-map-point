@@ -87,7 +87,6 @@ export function MapPoint({
 
   const showLegend  = settings.showLegend ?? true;
   const legendTitle = settings.legendTitle ?? "";
-  const showTiles   = settings.showTiles ?? true;
   const colorLow    = settings.colorLow ?? "#ebedf0";
   const colorHigh   = settings.colorHigh ?? "#509EE3";
   const baseRadius  = Math.max(4, settings.pointSize ?? 7);
@@ -269,7 +268,7 @@ export function MapPoint({
     return <div style={{ width: cw, height: ch, background: bgColor }} />;
   }
 
-  const tiles = showTiles ? buildTileList(mapState, cw, mapH) : [];
+  const tiles = buildTileList(mapState, cw, mapH);
   const anyHovered = hoveredKey !== null;
 
   const pointEls = points.map((p) => {
@@ -401,27 +400,25 @@ export function MapPoint({
       <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, background: dark ? "#2a2a2a" : "#e8eef4" }} />
 
       {/* OSM tile layer — HTML img elements clipped to map area */}
-      {showTiles && (
-        <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, overflow: "hidden" }}>
-          {tiles.map(({ tileX, tileY, x, y }) => (
-            <img
-              key={`${tileX}-${tileY}`}
-              src={`https://tile.openstreetmap.org/${mapState.zoom}/${tileX}/${tileY}.png`}
-              style={{
-                position: "absolute",
-                left: Math.round(x),
-                top: Math.round(y),
-                width: TILE_SIZE,
-                height: TILE_SIZE,
-                display: "block",
-                pointerEvents: "none",
-              }}
-              alt=""
-              draggable={false}
-            />
-          ))}
-        </div>
-      )}
+      <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, overflow: "hidden" }}>
+        {tiles.map(({ tileX, tileY, x, y }) => (
+          <img
+            key={`${tileX}-${tileY}`}
+            src={`https://tile.openstreetmap.org/${mapState.zoom}/${tileX}/${tileY}.png`}
+            style={{
+              position: "absolute",
+              left: Math.round(x),
+              top: Math.round(y),
+              width: TILE_SIZE,
+              height: TILE_SIZE,
+              display: "block",
+              pointerEvents: "none",
+            }}
+            alt=""
+            draggable={false}
+          />
+        ))}
+      </div>
 
       {/* SVG — points + attribution */}
       <svg
@@ -435,11 +432,9 @@ export function MapPoint({
         <g clipPath="url(#mp-clip)" style={{ pointerEvents: "all" }}>
           {pointEls}
         </g>
-        {showTiles && (
-          <text x={cw - 4} y={mapH - 4} fontSize={9} fill={dark ? "#888" : "#666"} textAnchor="end" fontFamily="sans-serif" style={{ pointerEvents: "none" }}>
-            © OpenStreetMap contributors
-          </text>
-        )}
+        <text x={cw - 4} y={mapH - 4} fontSize={9} fill={dark ? "#888" : "#666"} textAnchor="end" fontFamily="sans-serif" style={{ pointerEvents: "none" }}>
+          © OpenStreetMap contributors
+        </text>
       </svg>
 
       {/* Zoom controls */}

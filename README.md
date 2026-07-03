@@ -32,7 +32,7 @@ ORDER BY 4 DESC
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Label column | Text column shown in tooltip and used for drill-through | First text column |
+| Tooltip label column | Column displayed as the title in the hover tooltip and used for drill-through | First text column, or first non-lat/lon column |
 | Latitude column | Numeric column (decimal degrees, −90 to 90) | First column matching `lat` |
 | Longitude column | Numeric column (decimal degrees, −180 to 180) | First column matching `lon`/`lng` |
 | Value column (color) | Numeric column used for color intensity | First numeric not matching lat/lon |
@@ -44,7 +44,6 @@ ORDER BY 4 DESC
 | Point size | Circle radius in pixels | `7` |
 | Color — low values | Color for the lowest values | `#ebedf0` |
 | Color — high values | Color for the highest values | `#509EE3` |
-| Show map tiles | Display OpenStreetMap background tiles | `true` |
 | Show legend | Display the color scale legend below the map | `true` |
 | Legend title | Optional label displayed above the legend | *(empty)* |
 

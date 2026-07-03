@@ -24,14 +24,19 @@ const createVisualization: CreateCustomVisualization<Settings> = ({ defineSettin
       // ── Data ──────────────────────────────────────────────────────────
       labelColumn: defineSetting({
         id: "labelColumn",
-        title: "Label column",
+        title: "Tooltip label column",
         widget: "select",
         getSection() { return "Data"; },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         getDefault(series: any) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const cols = (series?.[0]?.data?.cols ?? []) as any[];
-          return (cols.find((c) => isTextCol(c)) ?? cols[0])?.name ?? "";
+          // 1. prefer a text column
+          const textCol = cols.find((c) => isTextCol(c));
+          if (textCol) return textCol.name;
+          // 2. fallback: first column that doesn't look like lat/lon
+          const nonGeo = cols.find((c) => !/lat|lon|lng/i.test(c.name));
+          return nonGeo?.name ?? cols[0]?.name ?? "";
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         getProps(series: any) {
@@ -124,14 +129,6 @@ const createVisualization: CreateCustomVisualization<Settings> = ({ defineSettin
         widget: "color",
         getSection() { return "Appearance"; },
         getDefault() { return "#509EE3"; },
-      }),
-
-      showTiles: defineSetting({
-        id: "showTiles",
-        title: "Show map tiles (OpenStreetMap)",
-        widget: "toggle",
-        getSection() { return "Appearance"; },
-        getDefault() { return true; },
       }),
 
       showLegend: defineSetting({

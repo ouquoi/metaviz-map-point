@@ -8,5 +8,4 @@ export type Settings = {
   colorHigh?: string;
   showLegend?: boolean;
   legendTitle?: string;
-  showTiles?: boolean;
 };
