@@ -1,6 +1,6 @@
 # Map Point
 
-A geolocated point map for Metabase. Each row becomes a circle on an auto-fitted Mercator projection, colored by value intensity. Instantly reveals geographic patterns in your data.
+A geolocated point map for Metabase. Each row becomes a circle on an interactive OSM-tiled map, colored by value intensity. Supports zoom, pan, and hover tooltips.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ GROUP BY 1, 2, 3
 ORDER BY 4 DESC
 ```
 
-### Configure settings
+### Settings
 
 #### Data
 
@@ -44,6 +44,7 @@ ORDER BY 4 DESC
 | Point size | Circle radius in pixels | `7` |
 | Color — low values | Color for the lowest values | `#ebedf0` |
 | Color — high values | Color for the highest values | `#509EE3` |
+| Show map tiles | Display OpenStreetMap background tiles | `true` |
 | Show legend | Display the color scale legend below the map | `true` |
 | Legend title | Optional label displayed above the legend | *(empty)* |
 
@@ -51,12 +52,14 @@ ORDER BY 4 DESC
 
 | Feature | Details |
 |---------|---------|
-| Projection | Mercator, auto-fitted to data bounds (15% padding) |
+| Base map | OpenStreetMap tiles (HTML `<img>`, sandbox-safe) |
+| Zoom | Scroll wheel (centered on cursor) · +/− buttons · pinch-to-zoom on mobile |
+| Pan | Mouse drag · touch drag |
+| Auto-fit | Map auto-zooms and centers on data bounds at load |
 | Color scale | Linear gradient from low to high value |
 | Color legend | Gradient bar with min / mid / max values |
-| Hover tooltip | Shows label and value; dims other points |
+| Hover tooltip | Structured card with colored strip, label, metric name + value; arrow pointing to pin; smart positioning (flips to avoid edges) |
 | Drill-through | Click a point to filter by label |
-| Animation | Points fade in sequentially on load (SVG native, sandbox-safe, respects `prefers-reduced-motion`) |
 | Dark mode | Full dark theme support |
 | Responsive | Adapts to any card size |
 | Missing coords | Rows with null or out-of-range coordinates are ignored |
@@ -68,7 +71,7 @@ ORDER BY 4 DESC
 | Label | Text | Used for tooltip and drill-through |
 | Latitude | Float | Decimal degrees, must be in −90…90 |
 | Longitude | Float | Decimal degrees, must be in −180…180 |
-| Value | Numeric | Negative and null values are treated as 0 |
+| Value | Numeric | Optional — if absent, points render with a single color |
 
 ## Development
 
