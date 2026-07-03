@@ -24,41 +24,80 @@ export function isTextCol(col: { base_type?: string }): boolean {
   return /Text|Name|String|UUID/i.test(col.base_type ?? "");
 }
 
-// Mercator y-projection for a latitude (returns value in [0,1] range for lat in [-85, 85])
-export function mercatorY(lat: number): number {
-  const rad = (lat * Math.PI) / 180;
-  return Math.log(Math.tan(Math.PI / 4 + rad / 2));
+export const TILE_SIZE = 256;
+
+// OSM/Mercator tile coordinate system
+export function lonToTileX(lon: number, zoom: number): number {
+  return ((lon + 180) / 360) * Math.pow(2, zoom);
 }
 
-export type Bounds = {
-  minLat: number; maxLat: number;
-  minLon: number; maxLon: number;
-  minMercY: number; maxMercY: number;
+export function latToTileY(lat: number, zoom: number): number {
+  const latRad = (lat * Math.PI) / 180;
+  return ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * Math.pow(2, zoom);
+}
+
+export function chooseZoom(
+  minLat: number, maxLat: number,
+  minLon: number, maxLon: number,
+  svgW: number, svgH: number,
+): number {
+  for (let z = 14; z >= 0; z--) {
+    const xSpan = (lonToTileX(maxLon, z) - lonToTileX(minLon, z)) * TILE_SIZE;
+    const ySpan = (latToTileY(minLat, z) - latToTileY(maxLat, z)) * TILE_SIZE;
+    if (xSpan <= svgW * 0.7 && ySpan <= svgH * 0.7) return z;
+  }
+  return 0;
+}
+
+export type MapTransform = {
+  zoom: number;
+  pxMin: number; pyMin: number;
+  scale: number;
+  offsetX: number; offsetY: number;
+  txMin: number; txMax: number;
+  tyMin: number; tyMax: number;
 };
 
-export function computeBounds(points: { lat: number; lon: number }[]): Bounds | null {
+export function computeTransform(
+  points: { lat: number; lon: number }[],
+  svgW: number, svgH: number,
+): MapTransform | null {
   if (points.length === 0) return null;
-  let minLat = Infinity, maxLat = -Infinity;
-  let minLon = Infinity, maxLon = -Infinity;
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
   for (const p of points) {
     if (p.lat < minLat) minLat = p.lat;
     if (p.lat > maxLat) maxLat = p.lat;
     if (p.lon < minLon) minLon = p.lon;
     if (p.lon > maxLon) maxLon = p.lon;
   }
-  // Expand single-point bounds so projection doesn't divide by zero
-  if (minLat === maxLat) { minLat -= 1; maxLat += 1; }
-  if (minLon === maxLon) { minLon -= 1; maxLon += 1; }
-  return { minLat, maxLat, minLon, maxLon, minMercY: mercatorY(minLat), maxMercY: mercatorY(maxLat) };
+  if (minLat === maxLat) { minLat -= 0.5; maxLat += 0.5; }
+  if (minLon === maxLon) { minLon -= 0.5; maxLon += 0.5; }
+
+  const zoom = chooseZoom(minLat, maxLat, minLon, maxLon, svgW, svgH);
+  const n = Math.pow(2, zoom);
+
+  // Tile range covering bounds + 1 tile padding
+  const txMin = Math.max(0, Math.floor(lonToTileX(minLon, zoom)) - 1);
+  const txMax = Math.min(n - 1, Math.floor(lonToTileX(maxLon, zoom)) + 1);
+  const tyMin = Math.max(0, Math.floor(latToTileY(maxLat, zoom)) - 1);
+  const tyMax = Math.min(n - 1, Math.floor(latToTileY(minLat, zoom)) + 1);
+
+  const pxMin = txMin * TILE_SIZE;
+  const pyMin = tyMin * TILE_SIZE;
+  const pxMax = (txMax + 1) * TILE_SIZE;
+  const pyMax = (tyMax + 1) * TILE_SIZE;
+
+  const scaleX = svgW / (pxMax - pxMin);
+  const scaleY = svgH / (pyMax - pyMin);
+  const scale = Math.min(scaleX, scaleY);
+  const offsetX = (svgW - (pxMax - pxMin) * scale) / 2;
+  const offsetY = (svgH - (pyMax - pyMin) * scale) / 2;
+
+  return { zoom, pxMin, pyMin, scale, offsetX, offsetY, txMin, txMax, tyMin, tyMax };
 }
 
-const PAD = 0.15; // 15% padding on each side
-
-export function project(lat: number, lon: number, bounds: Bounds, w: number, h: number): [number, number] {
-  const innerW = w * (1 - 2 * PAD);
-  const innerH = h * (1 - 2 * PAD);
-  const x = w * PAD + ((lon - bounds.minLon) / (bounds.maxLon - bounds.minLon)) * innerW;
-  const my = mercatorY(lat);
-  const y = h * PAD + (1 - (my - bounds.minMercY) / (bounds.maxMercY - bounds.minMercY)) * innerH;
-  return [x, y];
+export function projectPoint(lat: number, lon: number, t: MapTransform): [number, number] {
+  const px = lonToTileX(lon, t.zoom) * TILE_SIZE;
+  const py = latToTileY(lat, t.zoom) * TILE_SIZE;
+  return [t.offsetX + (px - t.pxMin) * t.scale, t.offsetY + (py - t.pyMin) * t.scale];
 }

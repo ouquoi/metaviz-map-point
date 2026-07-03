@@ -126,6 +126,14 @@ const createVisualization: CreateCustomVisualization<Settings> = ({ defineSettin
         getDefault() { return "#509EE3"; },
       }),
 
+      showTiles: defineSetting({
+        id: "showTiles",
+        title: "Show map tiles (OpenStreetMap)",
+        widget: "toggle",
+        getSection() { return "Appearance"; },
+        getDefault() { return true; },
+      }),
+
       showLegend: defineSetting({
         id: "showLegend",
         title: "Show legend",
