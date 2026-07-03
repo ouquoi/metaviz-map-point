@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 import type { CustomVisualizationProps } from "@metabase/custom-viz";
 import type { Settings } from "./types";
 import {
   lerpColor, formatValue, isNumericCol, isTextCol,
+  TILE_SIZE, lonToTileX, latToTileY, tileXToLon, tileYToLat,
+  autoFit, buildTileList, projectPoint,
+  type MapState,
 } from "./utils";
 
 const LEGEND_BAR_H = 10;
@@ -32,9 +33,6 @@ export function MapPoint({
   colorScheme,
   onClick,
 }: CustomVisualizationProps<Settings>) {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<L.Map | null>(null);
-
   const cw = (width ?? 0) > 0 ? Math.floor(width ?? 0) : 0;
   const ch = (height ?? 0) > 0 ? Math.floor(height ?? 0) : 0;
   if (!cw || !ch) return null;
@@ -76,6 +74,7 @@ export function MapPoint({
 
   const showLegend  = settings.showLegend ?? true;
   const legendTitle = settings.legendTitle ?? "";
+  const showTiles   = settings.showTiles ?? true;
   const colorLow    = settings.colorLow ?? "#ebedf0";
   const colorHigh   = settings.colorHigh ?? "#509EE3";
   const baseRadius  = Math.max(4, settings.pointSize ?? 7);
@@ -86,85 +85,230 @@ export function MapPoint({
   const usedLegendH   = legendVisible ? LEGEND_H + LEGEND_MARGIN : 0;
   const mapH = ch - usedLegendH;
 
-  const maxVal  = points.length > 0 ? Math.max(...points.map((p) => p.value)) : 0;
-  const minVal  = points.length > 0 ? Math.min(...points.map((p) => p.value)) : 0;
+  const maxVal   = points.length > 0 ? Math.max(...points.map((p) => p.value)) : 0;
+  const minVal   = points.length > 0 ? Math.min(...points.map((p) => p.value)) : 0;
   const valRange = maxVal - minVal || 1;
 
-  // Recompute map when these change — stringify for stable comparison
-  const pointsKey = points.map((p) => `${p.lat},${p.lon},${p.value}`).join("|");
-  const settingsKey = `${colorLow}|${colorHigh}|${baseRadius}|${settings.showTiles}|${dark}`;
+  // ── Map state ─────────────────────────────────────────────────────────────
+  const [mapState, setMapState] = useState<MapState | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<number | null>(null);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; lat: number; lon: number } | null>(null);
+
+  const pointsKey = points.map((p) => `${p.lat},${p.lon}`).join("|");
+
+  // Auto-fit when data changes
   useEffect(() => {
-    if (!mapContainerRef.current || points.length === 0) return;
-
-    // Destroy previous instance
-    if (mapRef.current) {
-      mapRef.current.remove();
-      mapRef.current = null;
-    }
-
-    const container = mapContainerRef.current;
-
-    const map = L.map(container, {
-      zoomControl: true,
-      attributionControl: true,
-      scrollWheelZoom: true,
-    });
-
-    if (settings.showTiles ?? true) {
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors",
-        maxZoom: 18,
-      }).addTo(map);
-    }
-
-    points.forEach((p) => {
-      const t = (p.value - minVal) / valRange;
-      const fill = lerpColor(colorLow, colorHigh, t);
-
-      const marker = L.circleMarker([p.lat, p.lon], {
-        radius: baseRadius,
-        fillColor: fill,
-        fillOpacity: 0.9,
-        color: "#ffffff",
-        weight: 1.5,
-      }).addTo(map);
-
-      const popupContent = valueIdx >= 0
-        ? `<b>${p.label}</b><br>${formatValue(p.value)}`
-        : `<b>${p.label}</b>`;
-      marker.bindPopup(popupContent);
-
-      if (onClick && labelIdx >= 0) {
-        marker.on("click", (e) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (onClick as any)({
-            value: p.rawLabel,
-            column: cols[labelIdx],
-            data: [
-              { col: cols[labelIdx], value: p.rawLabel },
-              ...(valueIdx >= 0 ? [{ col: cols[valueIdx], value: p.value }] : []),
-            ],
-            dimensions: [{ value: p.rawLabel, column: cols[labelIdx] }],
-            event: e.originalEvent,
-            origin: { row: p.rawRow, cols },
-          });
-        });
-      }
-    });
-
-    // Fit all points
-    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number]));
-    map.fitBounds(bounds, { padding: [30, 30] });
-
-    mapRef.current = map;
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-    };
+    if (points.length === 0) return;
+    setMapState(autoFit(points, cw, mapH));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointsKey, settingsKey, mapH]);
+  }, [pointsKey, cw, mapH]);
+
+  // Non-passive wheel listener for zoom
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -1 : 1;
+
+      setMapState((prev) => {
+        if (!prev) return prev;
+        const newZoom = Math.max(0, Math.min(18, prev.zoom + delta));
+        if (newZoom === prev.zoom) return prev;
+
+        const rect = container.getBoundingClientRect();
+        const cursorX = e.clientX - rect.left;
+        const cursorY = e.clientY - rect.top;
+        const scaleFactor = Math.pow(2, newZoom - prev.zoom);
+
+        const centerPxX = lonToTileX(prev.lon, prev.zoom) * TILE_SIZE;
+        const centerPxY = latToTileY(prev.lat, prev.zoom) * TILE_SIZE;
+        const pxMin = centerPxX - cw / 2;
+        const pyMin = centerPxY - mapH / 2;
+
+        const wx = pxMin + cursorX;
+        const wy = pyMin + cursorY;
+
+        const newPxMin = wx * scaleFactor - cursorX;
+        const newPyMin = wy * scaleFactor - cursorY;
+
+        const newCenterX = (newPxMin + cw / 2) / TILE_SIZE;
+        const newCenterY = (newPyMin + mapH / 2) / TILE_SIZE;
+
+        const newLon = tileXToLon(newCenterX, newZoom);
+        const newLat = tileYToLat(newCenterY, newZoom);
+
+        return {
+          zoom: newZoom,
+          lat: Math.max(-85, Math.min(85, newLat)),
+          lon: ((newLon + 180) % 360 + 360) % 360 - 180,
+        };
+      });
+    };
+
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, [cw, mapH]);
+
+  // ── Drag handlers ─────────────────────────────────────────────────────────
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    dragRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      lat: mapState?.lat ?? 0,
+      lon: mapState?.lon ?? 0,
+    };
+    setIsDragging(true);
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (!dragRef.current || !mapState) return;
+    const dx = e.clientX - dragRef.current.x;
+    const dy = e.clientY - dragRef.current.y;
+
+    const n = Math.pow(2, mapState.zoom);
+    const dLon = -dx * 360 / (TILE_SIZE * n);
+    const startCyTile = latToTileY(dragRef.current.lat, mapState.zoom);
+    const newCyTile = startCyTile - dy / TILE_SIZE;
+    const newLat = tileYToLat(newCyTile, mapState.zoom);
+
+    const newLon = dragRef.current.lon + dLon;
+
+    setMapState({
+      zoom: mapState.zoom,
+      lat: Math.max(-85, Math.min(85, newLat)),
+      lon: ((newLon + 180) % 360 + 360) % 360 - 180,
+    });
+  };
+
+  const onMouseUp = () => {
+    dragRef.current = null;
+    setIsDragging(false);
+  };
+
+  // ── Touch handlers ─────────────────────────────────────────────────────────
+  const touchRef = useRef<{ x: number; y: number; lat: number; lon: number; dist?: number } | null>(null);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchRef.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        lat: mapState?.lat ?? 0,
+        lon: mapState?.lon ?? 0,
+      };
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      touchRef.current = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+        lat: mapState?.lat ?? 0,
+        lon: mapState?.lon ?? 0,
+        dist,
+      };
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault();
+    if (!touchRef.current || !mapState) return;
+
+    if (e.touches.length === 1) {
+      const dx = e.touches[0].clientX - touchRef.current.x;
+      const dy = e.touches[0].clientY - touchRef.current.y;
+      const n = Math.pow(2, mapState.zoom);
+      const dLon = -dx * 360 / (TILE_SIZE * n);
+      const startCyTile = latToTileY(touchRef.current.lat, mapState.zoom);
+      const newCyTile = startCyTile - dy / TILE_SIZE;
+      const newLat = tileYToLat(newCyTile, mapState.zoom);
+      const newLon = touchRef.current.lon + dLon;
+      setMapState({
+        zoom: mapState.zoom,
+        lat: Math.max(-85, Math.min(85, newLat)),
+        lon: ((newLon + 180) % 360 + 360) % 360 - 180,
+      });
+    } else if (e.touches.length === 2 && touchRef.current.dist) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const newDist = Math.sqrt(dx * dx + dy * dy);
+      const ratio = newDist / touchRef.current.dist;
+      const dz = Math.log2(ratio);
+      const newZoom = Math.max(0, Math.min(18, Math.round(mapState.zoom + dz)));
+      if (newZoom !== mapState.zoom) {
+        touchRef.current.dist = newDist;
+        setMapState((prev) => prev ? { ...prev, zoom: newZoom } : prev);
+      }
+    }
+  };
+
+  const onTouchEnd = () => { touchRef.current = null; };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  if (!mapState || points.length === 0) {
+    return <div style={{ width: cw, height: ch, background: bgColor }} />;
+  }
+
+  const tiles = showTiles ? buildTileList(mapState, cw, mapH) : [];
+  const anyHovered = hoveredKey !== null;
+
+  const pointEls = points.map((p) => {
+    const [px, py] = projectPoint(p.lat, p.lon, mapState, cw, mapH);
+    const t = (p.value - minVal) / valRange;
+    const fill = lerpColor(colorLow, colorHigh, t);
+    const hovered = hoveredKey === p.key;
+    const gOpacity = anyHovered ? (hovered ? 1 : 0.3) : 1;
+
+    return (
+      <g key={p.key} opacity={gOpacity}>
+        <circle
+          cx={px}
+          cy={py}
+          r={baseRadius}
+          fill={fill}
+          fillOpacity={0.9}
+          stroke="#fff"
+          strokeWidth={1.5}
+          style={{ cursor: "pointer" }}
+          onMouseEnter={(e) => {
+            setHoveredKey(p.key);
+            setTooltip({
+              x: e.clientX,
+              y: e.clientY,
+              text: valueIdx >= 0 ? `${p.label} · ${formatValue(p.value)}` : p.label,
+            });
+          }}
+          onMouseMove={(e) => {
+            setTooltip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null));
+          }}
+          onMouseLeave={() => { setHoveredKey(null); setTooltip(null); }}
+          onClick={(e) => {
+            if (onClick && labelIdx >= 0) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (onClick as any)({
+                value: p.rawLabel,
+                column: cols[labelIdx],
+                data: [
+                  { col: cols[labelIdx], value: p.rawLabel },
+                  ...(valueIdx >= 0 ? [{ col: cols[valueIdx], value: p.value }] : []),
+                ],
+                dimensions: [{ value: p.rawLabel, column: cols[labelIdx] }],
+                event: e.nativeEvent,
+                origin: { row: p.rawRow, cols },
+              });
+            }
+          }}
+        />
+      </g>
+    );
+  });
 
   // Legend
   const legendW = Math.floor((cw - 32) / 2);
@@ -201,13 +345,130 @@ export function MapPoint({
     );
   }
 
+  // Zoom button style
+  const zoomBtnStyle: React.CSSProperties = {
+    display: "block",
+    width: 28,
+    height: 28,
+    background: dark ? "#2a2a2a" : "#fff",
+    color: dark ? "#ccc" : "#333",
+    border: `1px solid ${dark ? "#444" : "#ccc"}`,
+    borderRadius: 4,
+    fontSize: 18,
+    lineHeight: "26px",
+    textAlign: "center",
+    cursor: "pointer",
+    userSelect: "none",
+    padding: 0,
+    boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+    marginBottom: 2,
+  };
+
   return (
-    <div style={{ position: "relative", width: cw, height: ch, background: bgColor, overflow: "hidden" }}>
-      <div
-        ref={mapContainerRef}
-        style={{ width: cw, height: mapH }}
-      />
+    <div
+      ref={containerRef}
+      style={{
+        position: "relative",
+        width: cw,
+        height: ch,
+        background: bgColor,
+        overflow: "hidden",
+        cursor: isDragging ? "grabbing" : "grab",
+        userSelect: "none",
+      }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
+      {/* Map background */}
+      <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, background: dark ? "#2a2a2a" : "#e8eef4" }} />
+
+      {/* OSM tile layer — HTML img elements clipped to map area */}
+      {showTiles && (
+        <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, overflow: "hidden" }}>
+          {tiles.map(({ tileX, tileY, x, y }) => (
+            <img
+              key={`${tileX}-${tileY}`}
+              src={`https://tile.openstreetmap.org/${mapState.zoom}/${tileX}/${tileY}.png`}
+              style={{
+                position: "absolute",
+                left: Math.round(x),
+                top: Math.round(y),
+                width: TILE_SIZE,
+                height: TILE_SIZE,
+                display: "block",
+                pointerEvents: "none",
+              }}
+              alt=""
+              draggable={false}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* SVG — points + attribution */}
+      <svg
+        style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+        width={cw}
+        height={mapH}
+      >
+        <clipPath id="mp-clip">
+          <rect x={0} y={0} width={cw} height={mapH} />
+        </clipPath>
+        <g clipPath="url(#mp-clip)" style={{ pointerEvents: "all" }}>
+          {pointEls}
+        </g>
+        {showTiles && (
+          <text x={cw - 4} y={mapH - 4} fontSize={9} fill={dark ? "#888" : "#666"} textAnchor="end" fontFamily="sans-serif" style={{ pointerEvents: "none" }}>
+            © OpenStreetMap contributors
+          </text>
+        )}
+      </svg>
+
+      {/* Zoom controls */}
+      <div style={{ position: "absolute", top: 10, left: 10, zIndex: 10, pointerEvents: "all" }}>
+        <button
+          style={zoomBtnStyle}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); setMapState((prev) => prev ? { ...prev, zoom: Math.min(18, prev.zoom + 1) } : prev); }}
+        >
+          +
+        </button>
+        <button
+          style={zoomBtnStyle}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); setMapState((prev) => prev ? { ...prev, zoom: Math.max(0, prev.zoom - 1) } : prev); }}
+        >
+          −
+        </button>
+      </div>
+
       {legendEl}
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div style={{
+          position: "fixed",
+          left: tooltip.x + 12,
+          top: tooltip.y - 32,
+          background: dark ? "#1F2335" : "#fff",
+          border: `1px solid ${dark ? "#3A4060" : "#ddd"}`,
+          borderRadius: 6,
+          padding: "4px 8px",
+          fontSize: 12,
+          color: dark ? "#ccc" : "#333",
+          pointerEvents: "none",
+          whiteSpace: "nowrap",
+          zIndex: 9999,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        }}>
+          {tooltip.text}
+        </div>
+      )}
     </div>
   );
 }
