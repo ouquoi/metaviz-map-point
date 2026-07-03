@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import type { CustomVisualizationProps } from "@metabase/custom-viz";
 import type { Settings } from "./types";
 import {
   lerpColor, formatValue, isNumericCol, isTextCol,
-  TILE_SIZE, computeTransform, projectPoint,
-  type MapTransform,
 } from "./utils";
 
 const LEGEND_BAR_H = 10;
@@ -24,19 +24,6 @@ type PointEntry = {
   rawLabel: unknown;
 };
 
-function buildTiles(t: MapTransform): { tileX: number; tileY: number; x: number; y: number; size: number }[] {
-  const tiles = [];
-  const size = TILE_SIZE * t.scale;
-  for (let ty = t.tyMin; ty <= t.tyMax; ty++) {
-    for (let tx = t.txMin; tx <= t.txMax; tx++) {
-      const x = t.offsetX + (tx * TILE_SIZE - t.pxMin) * t.scale;
-      const y = t.offsetY + (ty * TILE_SIZE - t.pyMin) * t.scale;
-      tiles.push({ tileX: tx, tileY: ty, x, y, size });
-    }
-  }
-  return tiles;
-}
-
 export function MapPoint({
   series,
   settings,
@@ -45,8 +32,8 @@ export function MapPoint({
   colorScheme,
   onClick,
 }: CustomVisualizationProps<Settings>) {
-  const [hoveredKey, setHoveredKey] = useState<number | null>(null);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
 
   const cw = (width ?? 0) > 0 ? Math.floor(width ?? 0) : 0;
   const ch = (height ?? 0) > 0 ? Math.floor(height ?? 0) : 0;
@@ -83,91 +70,106 @@ export function MapPoint({
     const value    = rawValue != null
       ? (typeof rawValue === "number" ? rawValue : parseFloat(String(rawValue)))
       : 0;
-    if (isNaN(value) || value < 0) continue;
+    if (isNaN(value)) continue;
     points.push({ key: i, label, lat, lon, value, rawRow: row, rawLabel });
   }
 
-  if (points.length === 0) return null;
-
   const showLegend  = settings.showLegend ?? true;
   const legendTitle = settings.legendTitle ?? "";
-  const showTiles   = settings.showTiles ?? true;
   const colorLow    = settings.colorLow ?? "#ebedf0";
   const colorHigh   = settings.colorHigh ?? "#509EE3";
   const baseRadius  = Math.max(4, settings.pointSize ?? 7);
 
   const hasTitle    = legendTitle.trim().length > 0;
   const LEGEND_H    = LEGEND_H_BASE + (hasTitle ? LEGEND_TITLE_H + 2 : 0);
-  const legendVisible = showLegend && ch >= 80 + LEGEND_H + LEGEND_MARGIN;
+  const legendVisible = showLegend && points.length > 0 && ch >= 80 + LEGEND_H + LEGEND_MARGIN;
   const usedLegendH   = legendVisible ? LEGEND_H + LEGEND_MARGIN : 0;
-
   const mapH = ch - usedLegendH;
 
-  const transform = computeTransform(points, cw, mapH);
-  if (!transform) return null;
-
-  const maxVal  = Math.max(...points.map((p) => p.value));
-  const minVal  = Math.min(...points.map((p) => p.value));
+  const maxVal  = points.length > 0 ? Math.max(...points.map((p) => p.value)) : 0;
+  const minVal  = points.length > 0 ? Math.min(...points.map((p) => p.value)) : 0;
   const valRange = maxVal - minVal || 1;
 
-  const anyHovered = hoveredKey !== null;
+  // Recompute map when these change — stringify for stable comparison
+  const pointsKey = points.map((p) => `${p.lat},${p.lon},${p.value}`).join("|");
+  const settingsKey = `${colorLow}|${colorHigh}|${baseRadius}|${settings.showTiles}|${dark}`;
 
-  // Points
-  const pointEls = points.map((p) => {
-    const [px, py] = projectPoint(p.lat, p.lon, transform);
-    const t = (p.value - minVal) / valRange;
-    const fill = lerpColor(colorLow, colorHigh, t);
-    const hovered = hoveredKey === p.key;
-    const gOpacity = anyHovered ? (hovered ? 1 : 0.3) : 1;
+  useEffect(() => {
+    if (!mapContainerRef.current || points.length === 0) return;
 
-    return (
-      <g key={p.key} opacity={gOpacity}>
-        <circle
-          cx={px}
-          cy={py}
-          r={baseRadius}
-          fill={fill}
-          fillOpacity={0.9}
-          stroke="#fff"
-          strokeWidth={1.5}
-          style={{ cursor: "pointer" }}
-          onMouseEnter={(e) => {
-            setHoveredKey(p.key);
-            setTooltip({
-              x: e.clientX,
-              y: e.clientY,
-              text: valueIdx >= 0 ? `${p.label} · ${formatValue(p.value)}` : p.label,
-            });
-          }}
-          onMouseMove={(e) => {
-            setTooltip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null));
-          }}
-          onMouseLeave={() => { setHoveredKey(null); setTooltip(null); }}
-          onClick={(e) => {
-            if (onClick && labelIdx >= 0) {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (onClick as any)({
-                value: p.rawLabel,
-                column: cols[labelIdx],
-                data: [
-                  { col: cols[labelIdx], value: p.rawLabel },
-                  ...(valueIdx >= 0 ? [{ col: cols[valueIdx], value: p.value }] : []),
-                ],
-                dimensions: [{ value: p.rawLabel, column: cols[labelIdx] }],
-                event: e.nativeEvent,
-                origin: { row: p.rawRow, cols },
-              });
-            }
-          }}
-        />
-      </g>
-    );
-  });
+    // Destroy previous instance
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+
+    const container = mapContainerRef.current;
+
+    const map = L.map(container, {
+      zoomControl: true,
+      attributionControl: true,
+      scrollWheelZoom: true,
+    });
+
+    if (settings.showTiles ?? true) {
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors",
+        maxZoom: 18,
+      }).addTo(map);
+    }
+
+    points.forEach((p) => {
+      const t = (p.value - minVal) / valRange;
+      const fill = lerpColor(colorLow, colorHigh, t);
+
+      const marker = L.circleMarker([p.lat, p.lon], {
+        radius: baseRadius,
+        fillColor: fill,
+        fillOpacity: 0.9,
+        color: "#ffffff",
+        weight: 1.5,
+      }).addTo(map);
+
+      const popupContent = valueIdx >= 0
+        ? `<b>${p.label}</b><br>${formatValue(p.value)}`
+        : `<b>${p.label}</b>`;
+      marker.bindPopup(popupContent);
+
+      if (onClick && labelIdx >= 0) {
+        marker.on("click", (e) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (onClick as any)({
+            value: p.rawLabel,
+            column: cols[labelIdx],
+            data: [
+              { col: cols[labelIdx], value: p.rawLabel },
+              ...(valueIdx >= 0 ? [{ col: cols[valueIdx], value: p.value }] : []),
+            ],
+            dimensions: [{ value: p.rawLabel, column: cols[labelIdx] }],
+            event: e.originalEvent,
+            origin: { row: p.rawRow, cols },
+          });
+        });
+      }
+    });
+
+    // Fit all points
+    const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number]));
+    map.fitBounds(bounds, { padding: [30, 30] });
+
+    mapRef.current = map;
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointsKey, settingsKey, mapH]);
 
   // Legend
   const legendW = Math.floor((cw - 32) / 2);
   const legendX = Math.round((cw - legendW) / 2);
-  const legendY = mapH + LEGEND_MARGIN / 2;
+  const legendY = LEGEND_MARGIN / 2;
 
   let legendEl: React.ReactElement | null = null;
   if (legendVisible && valueIdx >= 0) {
@@ -175,7 +177,17 @@ export function MapPoint({
     const barY   = legendY + (hasTitle ? LEGEND_TITLE_H + 2 : 0);
     const valY   = barY + LEGEND_BAR_H + LEGEND_GAP + LEGEND_TEXT_H - 2;
     legendEl = (
-      <g>
+      <svg
+        style={{ position: "absolute", bottom: 0, left: 0, background: bgColor }}
+        width={cw}
+        height={usedLegendH}
+      >
+        <defs>
+          <linearGradient id="mp-legend-grad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor={colorLow} />
+            <stop offset="100%" stopColor={colorHigh} />
+          </linearGradient>
+        </defs>
         {hasTitle && (
           <text x={cw / 2} y={titleY} fontSize={10} fill={axisColor} textAnchor="middle" fontWeight="600" fontFamily="sans-serif">
             {legendTitle}
@@ -185,89 +197,17 @@ export function MapPoint({
         <text x={legendX}           y={valY} fontSize={10} fill={axisColor} textAnchor="start"  fontFamily="sans-serif">{formatValue(minVal)}</text>
         <text x={cw / 2}            y={valY} fontSize={10} fill={axisColor} textAnchor="middle" fontFamily="sans-serif">{formatValue((minVal + maxVal) / 2)}</text>
         <text x={legendX + legendW} y={valY} fontSize={10} fill={axisColor} textAnchor="end"    fontFamily="sans-serif">{formatValue(maxVal)}</text>
-      </g>
+      </svg>
     );
   }
 
-  // Tiles — HTML <img> elements (NOT SVG <image> which is blocked by Metabase sandbox)
-  const tileImgs = showTiles
-    ? buildTiles(transform).map(({ tileX, tileY, x, y, size }) => (
-        <img
-          key={`${tileX}-${tileY}`}
-          src={`https://tile.openstreetmap.org/${transform.zoom}/${tileX}/${tileY}.png`}
-          style={{
-            position: "absolute",
-            left: Math.round(x),
-            top: Math.round(y),
-            width: Math.ceil(size),
-            height: Math.ceil(size),
-            display: "block",
-            pointerEvents: "none",
-          }}
-          alt=""
-          draggable={false}
-        />
-      ))
-    : null;
-
   return (
     <div style={{ position: "relative", width: cw, height: ch, background: bgColor, overflow: "hidden" }}>
-      {/* Map background fill */}
-      <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, background: dark ? "#2a2a2a" : "#e8eef4" }} />
-
-      {/* OSM tile layer — HTML img elements clipped to map area */}
-      {showTiles && (
-        <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, overflow: "hidden" }}>
-          {tileImgs}
-        </div>
-      )}
-
-      {/* SVG layer — points, legend, attribution */}
-      <svg style={{ position: "absolute", top: 0, left: 0 }} width={cw} height={ch}>
-        <defs>
-          <linearGradient id="mp-legend-grad" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor={colorLow} />
-            <stop offset="100%" stopColor={colorHigh} />
-          </linearGradient>
-          <clipPath id="mp-map-clip">
-            <rect x={0} y={0} width={cw} height={mapH} />
-          </clipPath>
-        </defs>
-
-        {/* Points clipped to map area */}
-        <g clipPath="url(#mp-map-clip)">
-          {pointEls}
-        </g>
-
-        {/* OSM attribution */}
-        {showTiles && (
-          <text x={cw - 4} y={mapH - 4} fontSize={9} fill={dark ? "#888" : "#666"} textAnchor="end" fontFamily="sans-serif">
-            © OpenStreetMap contributors
-          </text>
-        )}
-
-        {legendEl}
-      </svg>
-
-      {tooltip && (
-        <div style={{
-          position: "fixed",
-          left: tooltip.x + 12,
-          top: tooltip.y - 32,
-          background: dark ? "#1F2335" : "#fff",
-          border: `1px solid ${dark ? "#3A4060" : "#ddd"}`,
-          borderRadius: 6,
-          padding: "4px 8px",
-          fontSize: 12,
-          color: dark ? "#ccc" : "#333",
-          pointerEvents: "none",
-          whiteSpace: "nowrap",
-          zIndex: 9999,
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-        }}>
-          {tooltip.text}
-        </div>
-      )}
+      <div
+        ref={mapContainerRef}
+        style={{ width: cw, height: mapH }}
+      />
+      {legendEl}
     </div>
   );
 }
