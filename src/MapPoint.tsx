@@ -16,8 +16,7 @@ const LEGEND_H_BASE = LEGEND_BAR_H + LEGEND_GAP + LEGEND_TEXT_H;
 const LEGEND_MARGIN = 8;
 
 const TOOLTIP_W = 160;
-const TOOLTIP_H = 58; // approximate card height
-const ARROW_H = 6;
+const TOOLTIP_H = 58;
 
 type PointEntry = {
   key: number;
@@ -460,40 +459,16 @@ export function MapPoint({
       {/* Tooltip card */}
       {tooltip && (() => {
         const PIN_GAP = baseRadius + 4;
-        // Default: above the pin
-        let top = tooltip.svgY - PIN_GAP - TOOLTIP_H - ARROW_H;
-        let arrowAbove = false; // arrow is below card (pointing down to pin)
-        // Flip below if overflows top
-        if (top < 4) {
-          top = tooltip.svgY + PIN_GAP + ARROW_H;
-          arrowAbove = true; // arrow is above card (pointing up to pin)
-        }
-        // Horizontal: center on pin, clamp to container
+        let top = tooltip.svgY - PIN_GAP - TOOLTIP_H;
+        if (top < 4) top = tooltip.svgY + PIN_GAP;
         let left = tooltip.svgX - TOOLTIP_W / 2;
         left = Math.max(4, Math.min(cw - TOOLTIP_W - 4, left));
-        // Arrow X relative to card (clamped)
-        const arrowRelX = Math.max(10, Math.min(TOOLTIP_W - 22, tooltip.svgX - left - 6));
 
         const cardBg = dark ? "#1F2335" : "#fff";
         const border = `1px solid ${dark ? "#3A4060" : "#e0e0e0"}`;
-        const arrowBorderColor = dark ? "#1F2335" : "#fff";
 
         return (
           <div style={{ position: "absolute", top, left, width: TOOLTIP_W, pointerEvents: "none", zIndex: 9999 }}>
-            {/* Arrow above card (tooltip is below pin) */}
-            {arrowAbove && (
-              <div style={{
-                position: "absolute",
-                top: -ARROW_H,
-                left: arrowRelX,
-                width: 0, height: 0,
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderBottom: `${ARROW_H}px solid ${arrowBorderColor}`,
-              }} />
-            )}
-
-            {/* Card */}
             <div style={{
               background: cardBg,
               border,
@@ -503,9 +478,7 @@ export function MapPoint({
               display: "flex",
               flexDirection: "row",
             }}>
-              {/* Color strip */}
               <div style={{ width: 4, background: tooltip.color, flexShrink: 0 }} />
-              {/* Content */}
               <div style={{ padding: "7px 10px", minWidth: 0 }}>
                 <div style={{
                   fontSize: 12,
@@ -532,19 +505,6 @@ export function MapPoint({
                 )}
               </div>
             </div>
-
-            {/* Arrow below card (tooltip is above pin) */}
-            {!arrowAbove && (
-              <div style={{
-                position: "absolute",
-                bottom: -ARROW_H,
-                left: arrowRelX,
-                width: 0, height: 0,
-                borderLeft: "6px solid transparent",
-                borderRight: "6px solid transparent",
-                borderTop: `${ARROW_H}px solid ${arrowBorderColor}`,
-              }} />
-            )}
           </div>
         );
       })()}
