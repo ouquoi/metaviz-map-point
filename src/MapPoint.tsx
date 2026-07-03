@@ -15,6 +15,10 @@ const LEGEND_TITLE_H = 14;
 const LEGEND_H_BASE = LEGEND_BAR_H + LEGEND_GAP + LEGEND_TEXT_H;
 const LEGEND_MARGIN = 8;
 
+const TOOLTIP_W = 160;
+const TOOLTIP_H = 58; // approximate card height
+const ARROW_H = 6;
+
 type PointEntry = {
   key: number;
   label: string;
@@ -23,6 +27,15 @@ type PointEntry = {
   value: number;
   rawRow: unknown[];
   rawLabel: unknown;
+};
+
+type TooltipData = {
+  svgX: number;
+  svgY: number;
+  label: string;
+  value: number | null;
+  colName: string;
+  color: string;
 };
 
 export function MapPoint({
@@ -92,7 +105,7 @@ export function MapPoint({
   // ── Map state ─────────────────────────────────────────────────────────────
   const [mapState, setMapState] = useState<MapState | null>(null);
   const [hoveredKey, setHoveredKey] = useState<number | null>(null);
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -277,16 +290,16 @@ export function MapPoint({
           stroke="#fff"
           strokeWidth={1.5}
           style={{ cursor: "pointer" }}
-          onMouseEnter={(e) => {
+          onMouseEnter={() => {
             setHoveredKey(p.key);
             setTooltip({
-              x: e.clientX,
-              y: e.clientY,
-              text: valueIdx >= 0 ? `${p.label} · ${formatValue(p.value)}` : p.label,
+              svgX: px,
+              svgY: py,
+              label: p.label,
+              value: valueIdx >= 0 ? p.value : null,
+              colName: valueIdx >= 0 ? (cols[valueIdx].display_name || cols[valueIdx].name || "") : "",
+              color: fill,
             });
-          }}
-          onMouseMove={(e) => {
-            setTooltip((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null));
           }}
           onMouseLeave={() => { setHoveredKey(null); setTooltip(null); }}
           onClick={(e) => {
@@ -449,26 +462,97 @@ export function MapPoint({
 
       {legendEl}
 
-      {/* Tooltip */}
-      {tooltip && (
-        <div style={{
-          position: "fixed",
-          left: tooltip.x + 12,
-          top: tooltip.y - 32,
-          background: dark ? "#1F2335" : "#fff",
-          border: `1px solid ${dark ? "#3A4060" : "#ddd"}`,
-          borderRadius: 6,
-          padding: "4px 8px",
-          fontSize: 12,
-          color: dark ? "#ccc" : "#333",
-          pointerEvents: "none",
-          whiteSpace: "nowrap",
-          zIndex: 9999,
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-        }}>
-          {tooltip.text}
-        </div>
-      )}
+      {/* Tooltip card */}
+      {tooltip && (() => {
+        const PIN_GAP = baseRadius + 4;
+        // Default: above the pin
+        let top = tooltip.svgY - PIN_GAP - TOOLTIP_H - ARROW_H;
+        let arrowAbove = false; // arrow is below card (pointing down to pin)
+        // Flip below if overflows top
+        if (top < 4) {
+          top = tooltip.svgY + PIN_GAP + ARROW_H;
+          arrowAbove = true; // arrow is above card (pointing up to pin)
+        }
+        // Horizontal: center on pin, clamp to container
+        let left = tooltip.svgX - TOOLTIP_W / 2;
+        left = Math.max(4, Math.min(cw - TOOLTIP_W - 4, left));
+        // Arrow X relative to card (clamped)
+        const arrowRelX = Math.max(10, Math.min(TOOLTIP_W - 22, tooltip.svgX - left - 6));
+
+        const cardBg = dark ? "#1F2335" : "#fff";
+        const border = `1px solid ${dark ? "#3A4060" : "#e0e0e0"}`;
+        const arrowBorderColor = dark ? "#1F2335" : "#fff";
+
+        return (
+          <div style={{ position: "absolute", top, left, width: TOOLTIP_W, pointerEvents: "none", zIndex: 9999 }}>
+            {/* Arrow above card (tooltip is below pin) */}
+            {arrowAbove && (
+              <div style={{
+                position: "absolute",
+                top: -ARROW_H,
+                left: arrowRelX,
+                width: 0, height: 0,
+                borderLeft: "6px solid transparent",
+                borderRight: "6px solid transparent",
+                borderBottom: `${ARROW_H}px solid ${arrowBorderColor}`,
+              }} />
+            )}
+
+            {/* Card */}
+            <div style={{
+              background: cardBg,
+              border,
+              borderRadius: 6,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.18)",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "row",
+            }}>
+              {/* Color strip */}
+              <div style={{ width: 4, background: tooltip.color, flexShrink: 0 }} />
+              {/* Content */}
+              <div style={{ padding: "7px 10px", minWidth: 0 }}>
+                <div style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: dark ? "#e0e0e0" : "#1a1a1a",
+                  fontFamily: "sans-serif",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}>
+                  {tooltip.label}
+                </div>
+                {tooltip.value !== null && (
+                  <div style={{
+                    fontSize: 11,
+                    color: dark ? "#9BA7B5" : "#666",
+                    fontFamily: "sans-serif",
+                    marginTop: 2,
+                    whiteSpace: "nowrap",
+                  }}>
+                    {tooltip.colName && <span style={{ fontWeight: 500 }}>{tooltip.colName} </span>}
+                    {formatValue(tooltip.value)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Arrow below card (tooltip is above pin) */}
+            {!arrowAbove && (
+              <div style={{
+                position: "absolute",
+                bottom: -ARROW_H,
+                left: arrowRelX,
+                width: 0, height: 0,
+                borderLeft: "6px solid transparent",
+                borderRight: "6px solid transparent",
+                borderTop: `${ARROW_H}px solid ${arrowBorderColor}`,
+              }} />
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
