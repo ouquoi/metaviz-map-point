@@ -112,20 +112,6 @@ export function MapPoint({
 
   const anyHovered = hoveredKey !== null;
 
-  // OSM tiles
-  const tileEls = showTiles
-    ? buildTiles(transform).map(({ tileX, tileY, x, y, size }) => (
-        <image
-          key={`${tileX}-${tileY}`}
-          href={`https://tile.openstreetmap.org/${transform.zoom}/${tileX}/${tileY}.png`}
-          x={x}
-          y={y}
-          width={size}
-          height={size}
-        />
-      ))
-    : null;
-
   // Points
   const pointEls = points.map((p) => {
     const [px, py] = projectPoint(p.lat, p.lon, transform);
@@ -203,9 +189,41 @@ export function MapPoint({
     );
   }
 
+  // Tiles — HTML <img> elements (NOT SVG <image> which is blocked by Metabase sandbox)
+  const tileImgs = showTiles
+    ? buildTiles(transform).map(({ tileX, tileY, x, y, size }) => (
+        <img
+          key={`${tileX}-${tileY}`}
+          src={`https://tile.openstreetmap.org/${transform.zoom}/${tileX}/${tileY}.png`}
+          style={{
+            position: "absolute",
+            left: Math.round(x),
+            top: Math.round(y),
+            width: Math.ceil(size),
+            height: Math.ceil(size),
+            display: "block",
+            pointerEvents: "none",
+          }}
+          alt=""
+          draggable={false}
+        />
+      ))
+    : null;
+
   return (
     <div style={{ position: "relative", width: cw, height: ch, background: bgColor, overflow: "hidden" }}>
-      <svg width={cw} height={ch}>
+      {/* Map background fill */}
+      <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, background: dark ? "#2a2a2a" : "#e8eef4" }} />
+
+      {/* OSM tile layer — HTML img elements clipped to map area */}
+      {showTiles && (
+        <div style={{ position: "absolute", top: 0, left: 0, width: cw, height: mapH, overflow: "hidden" }}>
+          {tileImgs}
+        </div>
+      )}
+
+      {/* SVG layer — points, legend, attribution */}
+      <svg style={{ position: "absolute", top: 0, left: 0 }} width={cw} height={ch}>
         <defs>
           <linearGradient id="mp-legend-grad" x1="0" x2="1" y1="0" y2="0">
             <stop offset="0%" stopColor={colorLow} />
@@ -216,15 +234,7 @@ export function MapPoint({
           </clipPath>
         </defs>
 
-        {/* Map background */}
-        <rect x={0} y={0} width={cw} height={mapH} fill={dark ? "#1c1c1c" : "#e8eef4"} />
-
-        {/* OSM tiles */}
-        <g clipPath="url(#mp-map-clip)">
-          {tileEls}
-        </g>
-
-        {/* Points (also clipped to map area) */}
+        {/* Points clipped to map area */}
         <g clipPath="url(#mp-map-clip)">
           {pointEls}
         </g>
